@@ -18,6 +18,9 @@ function evaluate(source, filename, dependencies = {}, globals = {}) {
 	vm.runInNewContext(compiled.outputText, {
 		module, exports: module.exports, console, setTimeout, clearTimeout, AbortController,
 		require: name => {
+			if (name === "./remote-http") return evaluate(read("src/core/ai/remote-http.ts"), "remote-http.ts", {
+				"@capacitor/core": { Capacitor: { isNativePlatform: () => false } },
+			}, globals);
 			assert.ok(name in dependencies, "Unexpected dependency: " + name);
 			return dependencies[name];
 		},

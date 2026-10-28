@@ -356,7 +356,13 @@ const applySettings = async () => {
 							{{ record.model }} · {{ providerLabels[record.provider] }}
 							<span v-if="record.scene"> · {{ record.scene }}</span>
 						</div>
-						<div class="usage-item__tokens" v-if="record.usageAvailable">
+						<div v-if="record.status === 'pending'" class="usage-item__tokens usage-item__tokens--muted">
+							正在请求远程模型，等待响应…
+						</div>
+						<div v-else-if="record.status === 'error'" class="usage-item__tokens usage-item__tokens--error">
+							请求失败：{{ record.error || "未知错误" }}
+						</div>
+						<div class="usage-item__tokens" v-else-if="record.usageAvailable">
 							输入 {{ formatTokenCount(record.inputTokens) }} / 输出 {{ formatTokenCount(record.outputTokens) }} / 总计
 							{{ formatTokenCount(record.totalTokens) }}
 						</div>
@@ -704,6 +710,11 @@ const applySettings = async () => {
 
 .usage-item__tokens--muted {
 	color: var(--fp-color-tertiary);
+}
+
+.usage-item__tokens--error {
+	color: var(--fp-color-text-error);
+	overflow-wrap: anywhere;
 }
 
 .setting-row {
