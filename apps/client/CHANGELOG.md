@@ -1,5 +1,12 @@
 # @mine-monopoly/client
 
+## 1.3.5
+
+### Patch Changes
+
+- 修复切换窗口后玩家位置或移动动画不同步的问题。
+- 修复 Android 版远程 AI 请求失败的问题，并改进请求状态和错误提示。
+
 ## 1.3.4
 
 ### Patch Changes
