@@ -341,6 +341,10 @@ function initDeviceStatusListener() {
 		// 恢复焦点时发送事件，通知渲染器同步状态
 		if (isNowFocus) {
 			useEventBus().emit("window:focus-restored");
+		} else {
+			// 页面隐藏时 rAF 停摆会冻结 GSAP 动画，通知渲染器强制完成进行中的移动动画，
+			// 避免 await 永久挂起导致走路队列与回执卡死
+			useEventBus().emit("window:hidden");
 		}
 	});
 }

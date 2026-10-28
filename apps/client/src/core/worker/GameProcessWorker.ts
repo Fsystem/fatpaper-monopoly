@@ -423,6 +423,11 @@ async function handleMessage(data: WorkerCommMsg) {
 		case WorkerCommType.EmitOperation:
 			{
 				const { userId, operateType, data: _data, metadata } = data.data;
+				// 恢复焦点等场景下客户端请求重发权威对局状态，用于渲染层位置对账；不进入操作监听流程
+				if (operateType === OperateType.SyncGameData) {
+					gameProcess?.gameDataBroadcast();
+					break;
+				}
 				operationListener.emit(userId, operateType, _data);
 				if (operateType === OperateType.GameInitFinished) gameProcess?.handleInitSignal(userId, metadata);
 

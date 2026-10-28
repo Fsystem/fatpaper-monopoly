@@ -39,4 +39,6 @@ export enum OperateType {
 	SafeModeSaveAndExit = "SafeModeSaveAndExit",
 	/** 地图分块接收确认 */
 	MapChunkAck = "MapChunkAck",
+	/** 客户端请求主机重发权威对局状态（用于窗口恢复焦点后的渲染对账） */
+	SyncGameData = "SyncGameData",
 }
