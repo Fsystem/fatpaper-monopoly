@@ -142,6 +142,8 @@ export class GameRenderer {
 	private arrivedEventIcons: Map<string, THREE.Mesh> = new Map<string, THREE.Mesh>(); // key = mapItemId
 	private playerPosition: Map<string, string> = new Map<string, string>();
 	private playerPendingWalks: Map<string, string> = new Map<string, string>(); // 防止同一玩家的走路动画并发执行
+	/** 进行中的移动动画（走路/传送）。页面隐藏时 rAF 停摆会冻结 GSAP，需要在隐藏瞬间强制完成，避免 await 挂起卡死队列 */
+	private activeMovementAnimations: Set<gsap.core.Animation> = new Set();
 	private requestAnimationFrameId: number = -1;
 
 	private playerWatchers: Map<
@@ -1350,8 +1352,22 @@ export class GameRenderer {
 		});
 
 		// 监听窗口恢复焦点事件
+		useEventBus().on("window:hidden", () => {
+			// 页面隐藏时 rAF 停摆会冻结 GSAP 动画，强制完成进行中的移动动画，
+			// 让挂起的 await 立即返回，后续走路事件走失焦直落位路径，渲染层得以跟上权威推进
+			this.completeAllMovementAnimations();
+		});
+
 		useEventBus().on("window:focus-restored", () => {
-			this.reloadScene();
+			// 向主机请求重发权威对局状态（本端恢复期间移动可能仍在推进，本地快照可能过期）
+			const monopolyClient = useMonopolyClient();
+			monopolyClient && monopolyClient.requestGameDataSync();
+			void this.reloadScene();
+		});
+
+		// 收到权威对局快照后对账渲染位置，兜底丢失的移动事件
+		useEventBus().on("game-data-synced", () => {
+			this.reconcilePlayerPositions();
 		});
 
 		this.commonWatchers.push(
@@ -1417,6 +1433,8 @@ export class GameRenderer {
 				// 标记动画开始
 				this.playerPendingWalks.set(walkPlayerId, walkId);
 
+				// 实体可能暂时不存在（如 reloadScene 正在重建），此时跳过动画，
+				// 但位置记录、标记清理和 AnimationComplete 回报必须执行，否则会卡死队列并阻塞房主推进
 				const playerEntity = this.playerEntities.get(walkPlayerId);
 				if (playerEntity) {
 					const model = this.playerEntities.get(walkPlayerId)?.model;
@@ -1427,18 +1445,22 @@ export class GameRenderer {
 						y: Math.sign(playerEntity.model.scale.y),
 						z: Math.sign(playerEntity.model.scale.z),
 					});
+				}
 
-					try {
-						if (segment) {
+				try {
+					if (segment) {
+						if (playerEntity) {
 							await this.updatePlayerPositionBySegment(walkPlayerId, segment, totalSteps, startStep);
-							this.playerPosition.set(walkPlayerId, segment.toMapItemId);
+						}
+						this.playerPosition.set(walkPlayerId, segment.toMapItemId);
+					} else {
+						const sourcePosition = this.getLegacyPositionIndex(walkPlayerId);
+						const mapIndexLength = mapDataStore.mapIndex.length;
+						if (sourcePosition === undefined || mapIndexLength <= 0) {
+							console.warn(`[渲染器] 无法解析旧版走路起点: ${walkPlayerId}`);
 						} else {
-							const sourcePosition = this.getLegacyPositionIndex(walkPlayerId);
-							const mapIndexLength = mapDataStore.mapIndex.length;
-							if (sourcePosition === undefined || mapIndexLength <= 0) {
-								console.warn(`[渲染器] 无法解析旧版走路起点: ${walkPlayerId}`);
-							} else {
-								const endIndex = (((sourcePosition + step) % mapIndexLength) + mapIndexLength) % mapIndexLength;
+							const endIndex = (((sourcePosition + step) % mapIndexLength) + mapIndexLength) % mapIndexLength;
+							if (playerEntity) {
 								await this.updatePlayerPositionByStep(
 									walkPlayerId,
 									sourcePosition,
@@ -1447,27 +1469,32 @@ export class GameRenderer {
 									totalSteps ?? Math.abs(step),
 									startStep ?? 1,
 								);
-								const endMapItemId = this.getMapItemIdByIndex(endIndex);
-								if (endMapItemId) this.playerPosition.set(walkPlayerId, endMapItemId);
 							}
+							const endMapItemId = this.getMapItemIdByIndex(endIndex);
+							if (endMapItemId) this.playerPosition.set(walkPlayerId, endMapItemId);
 						}
-					} catch (error) {
-						console.error(`[渲染器] 玩家移动动画失败: ${walkPlayerId}`, error);
-					} finally {
+					}
+				} catch (error) {
+					console.error(`[渲染器] 玩家移动动画失败: ${walkPlayerId}`, error);
+				} finally {
+					// 只清理属于本次走路的标记，避免误删后继走路已设置的标记导致动画并发
+					if (this.playerPendingWalks.get(walkPlayerId) === walkId) {
 						this.playerPendingWalks.delete(walkPlayerId);
 					}
+				}
 
+				if (playerEntity) {
 					this.currentFocusModule = null;
 					this.isLockingRole = false;
 					if (!this.pathChoiceController.isActive && !this.pathChoiceController.isCameraTransitioning) {
 						this.controls.enabled = true;
 					}
-
-					// 拆散重叠的玩家模型
-					this.breakUpPlayersInSameMapItem();
-					const monopolyClient = useMonopolyClient();
-					monopolyClient && monopolyClient.AnimationComplete(walkId);
 				}
+
+				// 拆散重叠的玩家模型
+				this.breakUpPlayersInSameMapItem();
+				const monopolyClient = useMonopolyClient();
+				monopolyClient && monopolyClient.AnimationComplete(walkId);
 			},
 		);
 		useEventBus().on(
@@ -1487,11 +1514,13 @@ export class GameRenderer {
 					const originalDir = Math.sign(body.scale.x) || 1;
 
 					// 2. 消失动画
-					await gsap.to(body.scale, {
+					const disappearAnimation = gsap.to(body.scale, {
 						x: 0,
 						duration: 0.5,
 						ease: "back.in(1.7)",
 					});
+					this.trackMovementAnimation(disappearAnimation);
+					await disappearAnimation;
 
 					// 3. 执行位移 (瞬间) - 修复高度问题
 					const resolvedMapItemId = mapItemId ?? this.getMapItemIdByIndex(positionIndex);
@@ -1504,12 +1533,14 @@ export class GameRenderer {
 					if (resolvedMapItemId) this.playerPosition.set(tpPlayerId, resolvedMapItemId);
 
 					// 4. 出现动画
-					await gsap.to(body.scale, {
+					const appearAnimation = gsap.to(body.scale, {
 						x: originalDir,
 						duration: 0.5,
 						delay: 0.1,
 						ease: "back.out(1.7)",
 					});
+					this.trackMovementAnimation(appearAnimation);
+					await appearAnimation;
 
 					this.currentFocusModule = null;
 					this.isLockingRole = false;
@@ -2013,6 +2044,7 @@ export class GameRenderer {
 				},
 				0,
 			);
+			this.trackMovementAnimation(animation);
 			await animation;
 		} finally {
 			playerBody?.remove(stepMesh);
@@ -2204,6 +2236,7 @@ export class GameRenderer {
 							);
 						}
 
+						this.trackMovementAnimation(currentAnimation);
 						await currentAnimation;
 					} else {
 						throw new Error("MapItem error");
@@ -2225,18 +2258,63 @@ export class GameRenderer {
 	}
 
 	/**
+	 * 登记进行中的移动动画，结束后自动移出登记表。
+	 * 页面隐藏（rAF 停摆）会冻结 GSAP 动画，导致 await 永不返回；
+	 * 登记后在 window:hidden 时可统一强制完成。
+	 */
+	private trackMovementAnimation(animation: gsap.core.Animation): void {
+		this.activeMovementAnimations.add(animation);
+		animation.then(() => {
+			this.activeMovementAnimations.delete(animation);
+		});
+	}
+
+	/** 强制完成所有进行中的移动动画（跳到末帧并触发完成回调），用于页面隐藏瞬间避免动画冻结挂起 */
+	private completeAllMovementAnimations(): void {
+		for (const animation of Array.from(this.activeMovementAnimations)) {
+			try {
+				animation.progress(1);
+			} catch (error) {
+				console.error("[渲染器] 强制完成移动动画失败:", error);
+			}
+		}
+		this.activeMovementAnimations.clear();
+	}
+
+	/**
+	 * 将渲染层玩家位置与权威 GameData 对账。
+	 * 渲染位置由逐步 PlayerWalk/PlayerTp 动画事件溯源，任何一端丢事件都会永久漂移；
+	 * 在 GameData 广播、走路动画完成、焦点恢复重建等时机按权威状态纠偏，保证最终收敛。
+	 * 正在播放走路动画的玩家跳过（其动画结束后会再对账），避免和进行中的补间互相拉扯。
+	 */
+	private reconcilePlayerPositions(): void {
+		const players = useGameData().players;
+		let changed = false;
+		for (const playerInfo of players) {
+			if (this.playerPendingWalks.has(playerInfo.id)) continue;
+			const authoritativeMapItemId = this.resolvePlayerMapItemId(playerInfo);
+			if (!authoritativeMapItemId) continue;
+			if (this.playerPosition.get(playerInfo.id) === authoritativeMapItemId) continue;
+			this.updatePlayerPosition(playerInfo);
+			changed = true;
+		}
+		if (changed) this.breakUpPlayersInSameMapItem();
+	}
+
+	/**
 	 * 重新加载场景（类似重新初始化渲染器）
 	 * 用于窗口恢复焦点时完全重新渲染
 	 */
 	public async reloadScene() {
-		// 1. 取消所有动画
-		this.playerPendingWalks.clear();
+		// 只重建实体，保留 playerPendingWalks 与 playerPosition：
+		// GameData 仅在整段走路结束后广播，走路中途切回前台时渲染层缓存反而更新；
+		// 进行中/排队中的走路会在重建后继续按顺序执行并自行对齐，
+		// 恢复焦点时还会请求权威 GameData 快照并触发 reconcilePlayerPositions 兜底纠偏。
 		this.clearAllThinkingMarkers();
 
 		// 2. 清空场景动态对象
 		this.playerEntities.forEach((player) => this.scene.remove(player.model));
 		this.playerEntities.clear();
-		this.playerPosition.clear();
 
 		this.housesItems.forEach((houseItem) => {
 			this.mapContainer.remove(houseItem.group);
@@ -2260,6 +2338,9 @@ export class GameRenderer {
 
 		// 4. 重新初始化建筑
 		await this.initProperties();
+
+		// 重建完成后按权威状态对账一次，纠正渲染缓存中的漂移
+		this.reconcilePlayerPositions();
 	}
 
 	private removePlayerEntity(playerId: string) {

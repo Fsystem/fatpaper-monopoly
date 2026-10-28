@@ -375,6 +375,18 @@ export class MonopolyClient {
 		utilStore.endAnimation();
 	}
 
+	/** 请求主机重发权威对局状态；用于窗口恢复焦点后渲染层位置对账 */
+	public requestGameDataSync() {
+		this.sendMsg({
+			type: SocketMsgType.Operation,
+			source: SocketMsgSource.Client,
+			data: {
+				operateType: OperateType.SyncGameData,
+				data: undefined,
+			},
+		});
+	}
+
 	public async sendMsg(msg: ClientSocketMessage): Promise<SessionSendResult> {
 		const result = this.session.send(msg);
 		if (!result.ok) console.warn("[MonopolyClient] 消息未发送", msg.type, result.reason);

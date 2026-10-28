@@ -560,6 +560,9 @@ const handleGameData: ServerMessageHandler<SocketMsgType.GameData> = (msg) => {
 		// 同步回合状态
 		const isMyTurn = Boolean(me) && gameData.currentPlayerIdInRound === getCurrentClientPlayerId();
 		utilStore.changeTurn(isMyTurn);
+
+		// 通知渲染层与权威对局状态对账（渲染位置由移动动画事件溯源，需要快照兜底纠偏）
+		useEventBus().emit("game-data-synced");
 	}
 };
 

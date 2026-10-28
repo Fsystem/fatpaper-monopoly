@@ -12,6 +12,7 @@ import type {
 } from "@mine-monopoly/types";
 import { recordAIRemoteUsage, updateAIRemoteUsage } from "./remote-usage-stats";
 import { buildRemotePrompt } from "./ReadableAIPrompt";
+import { requestRemoteLLM } from "./remote-http";
 
 type OpenAIChatCompletionResponse = {
 	choices?: Array<{
@@ -443,11 +444,11 @@ class RemoteAIDecisionProvider implements AIDecisionProvider {
 					body: remoteRequest.body,
 				},
 			});
-			const response = await fetch(remoteRequest.url, {
-				method: "POST",
+			const response = await requestRemoteLLM(remoteRequest.url, {
 				headers: remoteRequest.headers,
 				body: remoteRequest.body,
 				signal: controller.signal,
+				timeoutMs,
 			});
 			responseDetail = {
 				status: response.status,
@@ -458,7 +459,15 @@ class RemoteAIDecisionProvider implements AIDecisionProvider {
 			responseDetail.body = await response.text();
 			if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText}`.trim());
 
-			const data: unknown = JSON.parse(responseDetail.body);
+			if (!responseDetail.body.trim()) {
+				throw new Error(`远程接口返回空响应（HTTP ${response.status}），未返回模型结果`);
+			}
+			let data: unknown;
+			try {
+				data = JSON.parse(responseDetail.body);
+			} catch {
+				throw new Error(`远程接口返回的不是有效 JSON（HTTP ${response.status}）`);
+			}
 			usage = extractUsage(provider, data);
 			content = extractResponseContent(provider, data);
 			if (!content) throw new Error("远程模型未返回内容");

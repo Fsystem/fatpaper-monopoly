@@ -1140,4 +1140,7 @@ export interface PlayerOperationResult {
 
 	/** 地图分块接收确认 */
 	[OperateType.MapChunkAck]: MapChunkAckData;
+
+	/** 请求主机重发权威对局状态 */
+	[OperateType.SyncGameData]: undefined;
 }
